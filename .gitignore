@@ -1,0 +1,22 @@
+# cpp
+*.o
+*.out
+*.exe
+*.a
+*.so
+
+# Data
+*.csv
+*.pkl
+
+# python
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pkl
+.env
+.venv/
+env/
+venv/
