@@ -1,4 +1,0 @@
-# LLVM / compiler generated files
-*.ll
-*.as
-*.bc

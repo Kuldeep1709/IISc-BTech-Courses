@@ -1,0 +1,244 @@
+sil_stage canonical
+
+import Builtin
+import Swift
+import SwiftShims
+
+func sqr(n: Int) -> Int
+
+// main
+// Isolation: unspecified
+sil @main : $@convention(c) (Int32, UnsafeMutablePointer<Optional<UnsafeMutablePointer<Int8>>>) -> Int32 {
+[%1: noescape **]
+[global: read,write,copy,destroy,allocate,deinit_barrier]
+bb0(%0 : $Int32, %1 : $UnsafeMutablePointer<Optional<UnsafeMutablePointer<Int8>>>):
+  %2 = integer_literal $Builtin.Word, 1           // user: %5
+  %3 = integer_literal $Builtin.Int64, 1          // user: %4
+  %4 = struct $Int (%3)                           // user: %10
+  %5 = alloc_ref [tail_elems $Any * %2] $_ContiguousArrayStorage<Any> // user: %6
+  %6 = upcast %5 to $__ContiguousArrayStorageBase // users: %24, %15, %12, %7
+  %7 = struct $_ContiguousArrayBuffer<Any> (%6)   // user: %14
+  %8 = integer_literal $Builtin.Int64, 2          // user: %9
+  %9 = struct $UInt (%8)                          // user: %10
+  %10 = struct $_SwiftArrayBodyStorage (%4, %9)   // user: %11
+  %11 = struct $_ArrayBody (%10)                  // user: %13
+  %12 = ref_element_addr %6, #__ContiguousArrayStorageBase.countAndCapacity // user: %13
+  store %11 to %12                                // id: %13
+  %14 = struct $Array<Any> (%7)                   // user: %17
+  %15 = ref_tail_addr %6, $Any                    // user: %16
+  %16 = address_to_pointer %15 to $Builtin.RawPointer // user: %17
+  %17 = mark_dependence %16 on %14                // user: %18
+  %18 = pointer_to_address %17 to [strict] $*Any  // user: %22
+  debug_value undef : $Builtin.Int64, let, name "n", argno 1, type $Int, expr op_constu:100:op_fragment:#Int._value // id: %19
+  %20 = integer_literal $Builtin.Int64, 10000     // user: %21
+  %21 = struct $Int (%20)                         // user: %23
+  %22 = init_existential_addr %18, $Int           // user: %23
+  store %21 to %22                                // id: %23
+  %24 = end_cow_mutation %6                       // users: %41, %25
+  %25 = struct $_ContiguousArrayBuffer<Any> (%24) // user: %26
+  %26 = struct $Array<Any> (%25)                  // user: %40
+  %27 = integer_literal $Builtin.Int64, 32        // user: %28
+  %28 = struct $UInt64 (%27)                      // user: %31
+  %29 = integer_literal $Builtin.Int64, -2233785415175766016 // user: %30
+  %30 = value_to_bridge_object %29                // users: %36, %31
+  %31 = struct $_StringObject (%28, %30)          // user: %32
+  %32 = struct $_StringGuts (%31)                 // user: %33
+  %33 = struct $String (%32)                      // user: %40
+  %34 = integer_literal $Builtin.Int64, 10        // user: %35
+  %35 = struct $UInt64 (%34)                      // user: %36
+  %36 = struct $_StringObject (%35, %30)          // user: %37
+  %37 = struct $_StringGuts (%36)                 // user: %38
+  %38 = struct $String (%37)                      // user: %40
+  // function_ref print(_:separator:terminator:)
+  %39 = function_ref @$ss5print_9separator10terminatoryypd_S2StF : $@convention(thin) (@guaranteed Array<Any>, @guaranteed String, @guaranteed String) -> () // user: %40
+  %40 = apply %39(%26, %33, %38) : $@convention(thin) (@guaranteed Array<Any>, @guaranteed String, @guaranteed String) -> ()
+  strong_release %24                              // id: %41
+  %42 = integer_literal $Builtin.Int32, 0         // user: %43
+  %43 = struct $Int32 (%42)                       // user: %44
+  return %43                                      // id: %44
+} // end sil function 'main'
+
+// sqr(n:)
+// Isolation: unspecified
+sil hidden @$s14test_sil_swift3sqr1nS2i_tF : $@convention(thin) (Int) -> Int {
+[global: ]
+// %0 "n"                                         // users: %2, %1
+bb0(%0 : $Int):
+  debug_value %0, let, name "n", argno 1          // id: %1
+  %2 = struct_extract %0, #Int._value             // users: %4, %4
+  %3 = integer_literal $Builtin.Int1, -1          // user: %4
+  %4 = builtin "smul_with_overflow_Int64"(%2, %2, %3) : $(Builtin.Int64, Builtin.Int1) // users: %6, %5
+  %5 = tuple_extract %4, 0                        // user: %8
+  %6 = tuple_extract %4, 1                        // user: %7
+  cond_fail %6, "arithmetic overflow"             // id: %7
+  %8 = struct $Int (%5)                           // user: %9
+  return %8                                       // id: %9
+} // end sil function '$s14test_sil_swift3sqr1nS2i_tF'
+
+// print(_:separator:terminator:)
+// Isolation: unspecified
+sil @$ss5print_9separator10terminatoryypd_S2StF : $@convention(thin) (@guaranteed Array<Any>, @guaranteed String, @guaranteed String) -> ()
+
+// Array._endMutation()
+sil shared [_semantics "array.end_mutation"] [_specialize exported: true, kind: full, where  @_noMetadata Element : _Class] @$sSa12_endMutationyyF : $@convention(method) <Element> (@inout Array<Element>) -> () {
+[%0: noescape! **, read s0.s0.v**, write v**]
+[global: ]
+// %0                                             // users: %7, %1
+bb0(%0 : $*Array<Element>):
+  %1 = struct_element_addr %0, #Array._buffer     // user: %2
+  %2 = struct_element_addr %1, #_ContiguousArrayBuffer._storage // user: %3
+  %3 = load %2                                    // user: %4
+  %4 = end_cow_mutation %3                        // user: %5
+  %5 = struct $_ContiguousArrayBuffer<Element> (%4) // user: %6
+  %6 = struct $Array<Element> (%5)                // user: %7
+  store %6 to %0                                  // id: %7
+  %8 = tuple ()                                   // user: %9
+  return %8                                       // id: %9
+} // end sil function '$sSa12_endMutationyyF'
+
+// __ContiguousArrayStorageBase.__allocating_init()
+sil public_external [exact_self_class] @$ss28__ContiguousArrayStorageBaseCABycfC : $@convention(method) (@thick __ContiguousArrayStorageBase.Type) -> @owned __ContiguousArrayStorageBase {
+bb0(%0 : $@thick __ContiguousArrayStorageBase.Type):
+  %1 = string_literal utf8 "Swift.__ContiguousArrayStorageBase" // user: %3
+  %2 = string_literal utf8 "init()"               // user: %4
+  %3 = struct $UnsafePointer<UInt8> (%1)          // user: %12
+  %4 = struct $UnsafePointer<UInt8> (%2)          // user: %12
+  %5 = integer_literal $Builtin.Int32, 0          // user: %10
+  %6 = integer_literal $Builtin.Int32, 34         // user: %7
+  %7 = struct $Int32 (%6)                         // user: %12
+  %8 = integer_literal $Builtin.Int32, 6          // user: %9
+  %9 = struct $Int32 (%8)                         // user: %12
+  %10 = struct $UInt32 (%5)                       // user: %12
+  // function_ref _swift_stdlib_reportUnimplementedInitializer
+  %11 = function_ref @_swift_stdlib_reportUnimplementedInitializer : $@convention(c) (UnsafePointer<UInt8>, Int32, UnsafePointer<UInt8>, Int32, UInt32) -> () // user: %12
+  %12 = apply %11(%3, %7, %4, %9, %10) : $@convention(c) (UnsafePointer<UInt8>, Int32, UnsafePointer<UInt8>, Int32, UInt32) -> ()
+  %13 = builtin "int_trap"() : $Never
+  unreachable                                     // id: %14
+} // end sil function '$ss28__ContiguousArrayStorageBaseCABycfC'
+
+// _ContiguousArrayStorage.__allocating_init(_doNotCallMeBase:)
+sil public_external [exact_self_class] @$ss23_ContiguousArrayStorageC16_doNotCallMeBaseAByxGyt_tcfC : $@convention(method) <Element> (@thick _ContiguousArrayStorage<Element>.Type) -> @owned _ContiguousArrayStorage<Element> {
+bb0(%0 : $@thick _ContiguousArrayStorage<Element>.Type):
+  unreachable                                     // id: %1
+} // end sil function '$ss23_ContiguousArrayStorageC16_doNotCallMeBaseAByxGyt_tcfC'
+
+// _ContiguousArrayStorage.canStoreElements(ofDynamicType:)
+sil public_external @$ss23_ContiguousArrayStorageC16canStoreElements13ofDynamicTypeSbypXp_tF : $@convention(method) <Element> (@thick any Any.Type, @guaranteed _ContiguousArrayStorage<Element>) -> Bool {
+[%1: noescape **]
+bb0(%0 : $@thick any Any.Type, %1 : $_ContiguousArrayStorage<Element>):
+  %2 = integer_literal $Builtin.Int1, 0           // user: %3
+  %3 = struct $Bool (%2)                          // user: %4
+  return %3                                       // id: %4
+} // end sil function '$ss23_ContiguousArrayStorageC16canStoreElements13ofDynamicTypeSbypXp_tF'
+
+// _ContiguousArrayStorage.staticElementType.getter
+sil public_external @$ss23_ContiguousArrayStorageC17staticElementTypeypXpvg : $@convention(method) <Element> (@guaranteed _ContiguousArrayStorage<Element>) -> @thick any Any.Type {
+[%0: noescape **]
+bb0(%0 : $_ContiguousArrayStorage<Element>):
+  %1 = metatype $@thick Element.Type              // user: %2
+  %2 = init_existential_metatype %1, $@thick any Any.Type // user: %3
+  return %2                                       // id: %3
+} // end sil function '$ss23_ContiguousArrayStorageC17staticElementTypeypXpvg'
+
+// _ContiguousArrayStorage.__deallocating_deinit
+sil public_external @$ss23_ContiguousArrayStorageCfD : $@convention(method) <Element> (@owned _ContiguousArrayStorage<Element>) -> () {
+[%0: noescape, noescape c*.v**]
+// %0                                             // users: %14, %1, %3, %13
+bb0(%0 : $_ContiguousArrayStorage<Element>):
+  %1 = ref_tail_addr %0, $Element                 // user: %2
+  %2 = address_to_pointer %1 to $Builtin.RawPointer // user: %12
+  %3 = upcast %0 to $__ContiguousArrayStorageBase // user: %4
+  %4 = ref_element_addr %3, #__ContiguousArrayStorageBase.countAndCapacity // user: %5
+  %5 = struct_element_addr %4, #_ArrayBody._storage // user: %6
+  %6 = struct_element_addr %5, #_SwiftArrayBodyStorage.count // user: %7
+  %7 = struct_element_addr %6, #Int._value        // user: %8
+  %8 = load %7                                    // user: %9
+  %9 = builtin "assumeNonNegative_Int64"(%8) : $Builtin.Int64 // user: %10
+  %10 = builtin "truncOrBitCast_Int64_Word"(%9) : $Builtin.Word // user: %12
+  %11 = metatype $@thin Element.Type              // user: %12
+  %12 = builtin "destroyArray"<Element>(%11, %2, %10) : $()
+  fix_lifetime %0                                 // id: %13
+  dealloc_ref %0                                  // id: %14
+  %15 = tuple ()                                  // user: %16
+  return %15                                      // id: %16
+} // end sil function '$ss23_ContiguousArrayStorageCfD'
+
+// __ContiguousArrayStorageBase.__allocating_init(_doNotCallMeBase:)
+sil public_external [exact_self_class] @$ss28__ContiguousArrayStorageBaseC012_doNotCallMeD0AByt_tcfC : $@convention(method) (@thick __ContiguousArrayStorageBase.Type) -> @owned __ContiguousArrayStorageBase {
+bb0(%0 : $@thick __ContiguousArrayStorageBase.Type):
+  unreachable                                     // id: %1
+} // end sil function '$ss28__ContiguousArrayStorageBaseC012_doNotCallMeD0AByt_tcfC'
+
+// __ContiguousArrayStorageBase.canStoreElements(ofDynamicType:)
+sil public_external @$ss28__ContiguousArrayStorageBaseC16canStoreElements13ofDynamicTypeSbypXp_tF : $@convention(method) (@thick any Any.Type, @guaranteed __ContiguousArrayStorageBase) -> Bool {
+[%1: noescape **]
+bb0(%0 : $@thick any Any.Type, %1 : $__ContiguousArrayStorageBase):
+  unreachable                                     // id: %2
+} // end sil function '$ss28__ContiguousArrayStorageBaseC16canStoreElements13ofDynamicTypeSbypXp_tF'
+
+// __ContiguousArrayStorageBase.staticElementType.getter
+sil public_external @$ss28__ContiguousArrayStorageBaseC17staticElementTypeypXpvg : $@convention(method) (@guaranteed __ContiguousArrayStorageBase) -> @thick any Any.Type {
+[%0: noescape **]
+bb0(%0 : $__ContiguousArrayStorageBase):
+  unreachable                                     // id: %1
+} // end sil function '$ss28__ContiguousArrayStorageBaseC17staticElementTypeypXpvg'
+
+// __ContiguousArrayStorageBase.__deallocating_deinit
+sil public_external @$ss28__ContiguousArrayStorageBaseCfD : $@convention(method) (@owned __ContiguousArrayStorageBase) -> () {
+[%0: noescape **]
+// %0                                             // user: %1
+bb0(%0 : $__ContiguousArrayStorageBase):
+  dealloc_ref %0                                  // id: %1
+  %2 = tuple ()                                   // user: %3
+  return %2                                       // id: %3
+} // end sil function '$ss28__ContiguousArrayStorageBaseCfD'
+
+// __SwiftNativeNSArrayWithContiguousStorage.__allocating_init()
+sil public_external [exact_self_class] @$ss41__SwiftNativeNSArrayWithContiguousStorageCABycfC : $@convention(method) (@thick __SwiftNativeNSArrayWithContiguousStorage.Type) -> @owned __SwiftNativeNSArrayWithContiguousStorage {
+bb0(%0 : $@thick __SwiftNativeNSArrayWithContiguousStorage.Type):
+  %1 = alloc_ref $__SwiftNativeNSArrayWithContiguousStorage // user: %2
+  %2 = end_init_let_ref %1                        // user: %3
+  return %2                                       // id: %3
+} // end sil function '$ss41__SwiftNativeNSArrayWithContiguousStorageCABycfC'
+
+// __SwiftNativeNSArrayWithContiguousStorage.__deallocating_deinit
+sil public_external @$ss41__SwiftNativeNSArrayWithContiguousStorageCfD : $@convention(method) (@owned __SwiftNativeNSArrayWithContiguousStorage) -> () {
+[%0: noescape **]
+// %0                                             // user: %1
+bb0(%0 : $__SwiftNativeNSArrayWithContiguousStorage):
+  dealloc_ref %0                                  // id: %1
+  %2 = tuple ()                                   // user: %3
+  return %2                                       // id: %3
+} // end sil function '$ss41__SwiftNativeNSArrayWithContiguousStorageCfD'
+
+// _swift_stdlib_reportUnimplementedInitializer
+// clang name: _swift_stdlib_reportUnimplementedInitializer
+sil [clang _swift_stdlib_reportUnimplementedInitializer] @_swift_stdlib_reportUnimplementedInitializer : $@convention(c) (UnsafePointer<UInt8>, Int32, UnsafePointer<UInt8>, Int32, UInt32) -> ()
+
+sil_vtable _ContiguousArrayStorage {
+  #__SwiftNativeNSArrayWithContiguousStorage.init!allocator: (__SwiftNativeNSArrayWithContiguousStorage.Type) -> () -> __SwiftNativeNSArrayWithContiguousStorage : @$ss28__ContiguousArrayStorageBaseCABycfC [inherited]	// __ContiguousArrayStorageBase.__allocating_init()
+  #__ContiguousArrayStorageBase.init!allocator: (__ContiguousArrayStorageBase.Type) -> (()) -> __ContiguousArrayStorageBase : @$ss23_ContiguousArrayStorageC16_doNotCallMeBaseAByxGyt_tcfC [override]	// _ContiguousArrayStorage.__allocating_init(_doNotCallMeBase:)
+  #__ContiguousArrayStorageBase.canStoreElements: (__ContiguousArrayStorageBase) -> (any Any.Type) -> Bool : @$ss23_ContiguousArrayStorageC16canStoreElements13ofDynamicTypeSbypXp_tF [override]	// _ContiguousArrayStorage.canStoreElements(ofDynamicType:)
+  #__ContiguousArrayStorageBase.staticElementType!getter: (__ContiguousArrayStorageBase) -> () -> any Any.Type : @$ss23_ContiguousArrayStorageC17staticElementTypeypXpvg [override]	// _ContiguousArrayStorage.staticElementType.getter
+  #_ContiguousArrayStorage.deinit!deallocator: @$ss23_ContiguousArrayStorageCfD	// _ContiguousArrayStorage.__deallocating_deinit
+}
+
+sil_vtable __ContiguousArrayStorageBase {
+  #__SwiftNativeNSArrayWithContiguousStorage.init!allocator: (__SwiftNativeNSArrayWithContiguousStorage.Type) -> () -> __SwiftNativeNSArrayWithContiguousStorage : @$ss28__ContiguousArrayStorageBaseCABycfC [override]	// __ContiguousArrayStorageBase.__allocating_init()
+  #__ContiguousArrayStorageBase.init!allocator: (__ContiguousArrayStorageBase.Type) -> (()) -> __ContiguousArrayStorageBase : @$ss28__ContiguousArrayStorageBaseC012_doNotCallMeD0AByt_tcfC	// __ContiguousArrayStorageBase.__allocating_init(_doNotCallMeBase:)
+  #__ContiguousArrayStorageBase.canStoreElements: (__ContiguousArrayStorageBase) -> (any Any.Type) -> Bool : @$ss28__ContiguousArrayStorageBaseC16canStoreElements13ofDynamicTypeSbypXp_tF	// __ContiguousArrayStorageBase.canStoreElements(ofDynamicType:)
+  #__ContiguousArrayStorageBase.staticElementType!getter: (__ContiguousArrayStorageBase) -> () -> any Any.Type : @$ss28__ContiguousArrayStorageBaseC17staticElementTypeypXpvg	// __ContiguousArrayStorageBase.staticElementType.getter
+  #__ContiguousArrayStorageBase.deinit!deallocator: @$ss28__ContiguousArrayStorageBaseCfD	// __ContiguousArrayStorageBase.__deallocating_deinit
+}
+
+sil_vtable __SwiftNativeNSArrayWithContiguousStorage {
+  #__SwiftNativeNSArrayWithContiguousStorage.init!allocator: (__SwiftNativeNSArrayWithContiguousStorage.Type) -> () -> __SwiftNativeNSArrayWithContiguousStorage : @$ss41__SwiftNativeNSArrayWithContiguousStorageCABycfC	// __SwiftNativeNSArrayWithContiguousStorage.__allocating_init()
+  #__SwiftNativeNSArrayWithContiguousStorage.deinit!deallocator: @$ss41__SwiftNativeNSArrayWithContiguousStorageCfD	// __SwiftNativeNSArrayWithContiguousStorage.__deallocating_deinit
+}
+
+
+
+// Mappings from '#fileID' to '#filePath':
+//   'test_sil_swift/test.swift' => 'test.swift'
+
+
