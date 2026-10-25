@@ -1,0 +1,802 @@
+From 6f1c9caa41444af3124c88b196bb9483989ad096 Mon Sep 17 00:00:00 2001
+From: Kuldeep1709 <kuldeepjatav@iisc.ac.in>
+Date: Mon, 2 Mar 2026 06:41:33 +0530
+Subject: [PATCH] adding custom hoist-anticipated-expressions pass
+
+---
+ .../Utils/HoistAnticipatedExpression.h        |  72 ++++
+ llvm/lib/Passes/PassBuilder.cpp               |   1 +
+ llvm/lib/Passes/PassRegistry.def              |   1 +
+ llvm/lib/Transforms/Utils/CMakeLists.txt      |   1 +
+ .../Utils/HoistAnticipatedExpression.cpp      | 302 +++++++++++++++
+ .../Util/hoist-anticipated-expressions.ll     | 352 ++++++++++++++++++
+ 6 files changed, 729 insertions(+)
+ create mode 100644 llvm/include/llvm/Transforms/Utils/HoistAnticipatedExpression.h
+ create mode 100644 llvm/lib/Transforms/Utils/HoistAnticipatedExpression.cpp
+ create mode 100644 llvm/test/Transforms/Util/hoist-anticipated-expressions.ll
+
+diff --git a/llvm/include/llvm/Transforms/Utils/HoistAnticipatedExpression.h b/llvm/include/llvm/Transforms/Utils/HoistAnticipatedExpression.h
+new file mode 100644
+index 000000000000..55dea013e8fe
+--- /dev/null
++++ b/llvm/include/llvm/Transforms/Utils/HoistAnticipatedExpression.h
+@@ -0,0 +1,72 @@
++#ifndef HOIST_ANTICIPATED_EXPRESSIONS_H
++#define HOIST_ANTICIPATED_EXPRESSIONS_H
++
++#include "llvm/ADT/DenseMap.h"
++#include "llvm/ADT/DenseMapInfo.h"
++#include "llvm/ADT/SmallVector.h"
++#include "llvm/IR/PassManager.h"
++#include "llvm/IR/Type.h"
++#include "llvm/IR/Value.h"
++
++namespace llvm {
++
++class Function;
++class Instruction;
++
++// Represents a mathematical or cast expression for our analysis
++struct Expression {
++  unsigned opcode;
++  SmallVector<Value *, 4> operands;
++  Type *destType;
++
++  Expression() : opcode(0), destType(nullptr) {}
++
++  Expression(unsigned op, SmallVector<Value *, 4> ops, Type *ty = nullptr)
++      : opcode(op), operands(ops), destType(ty) {}
++
++  bool operator==(const Expression &other) const {
++    if (opcode != other.opcode || destType != other.destType)
++      return false;
++    if (operands.size() != other.operands.size())
++      return false;
++
++    // Check if all operands match
++    for (size_t i = 0; i < operands.size(); i++) {
++      if (operands[i] != other.operands[i]) return false;
++    }
++    return true;
++  }
++};
++
++// Custom hash function so we can use Expression as a key in LLVM's DenseMap (google search and other resources)
++template <> struct DenseMapInfo<Expression> {
++  static inline Expression getEmptyKey() {
++    return Expression(~0U, SmallVector<Value *, 4>(), nullptr);
++  }
++
++  static inline Expression getTombstoneKey() {
++    return Expression(~1U, SmallVector<Value *, 4>(), nullptr);
++  }
++
++  static unsigned getHashValue(const Expression &expr) {
++    unsigned hash = expr.opcode;
++    hash ^= (uintptr_t)expr.destType + 0x9e3779b9 + (hash << 6) + (hash >> 2);
++    for (Value *v : expr.operands) {
++      hash ^= (uintptr_t)v + 0x9e3779b9 + (hash << 6) + (hash >> 2);
++    }
++    return hash;
++  }
++
++  static bool isEqual(const Expression &a, const Expression &b) {
++    return a == b;
++  }
++};
++
++// The actual LLVM pass class
++struct HoistAnticipatedExpressionsPass : public PassInfoMixin<HoistAnticipatedExpressionsPass> {
++  PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
++};
++
++} // namespace llvm
++
++#endif
+\ No newline at end of file
+diff --git a/llvm/lib/Passes/PassBuilder.cpp b/llvm/lib/Passes/PassBuilder.cpp
+index 75a8c8df0eff..4a57aa5d9e4f 100644
+--- a/llvm/lib/Passes/PassBuilder.cpp
++++ b/llvm/lib/Passes/PassBuilder.cpp
+@@ -347,6 +347,7 @@
+ #include "llvm/Transforms/Utils/EntryExitInstrumenter.h"
+ #include "llvm/Transforms/Utils/FixIrreducible.h"
+ #include "llvm/Transforms/Utils/HelloWorld.h"
++#include "llvm/Transforms/Utils/HoistAnticipatedExpression.h"
+ #include "llvm/Transforms/Utils/IRNormalizer.h"
+ #include "llvm/Transforms/Utils/InjectTLIMappings.h"
+ #include "llvm/Transforms/Utils/InstructionNamer.h"
+diff --git a/llvm/lib/Passes/PassRegistry.def b/llvm/lib/Passes/PassRegistry.def
+index 9a943155aa19..8a6d312a41ff 100644
+--- a/llvm/lib/Passes/PassRegistry.def
++++ b/llvm/lib/Passes/PassRegistry.def
+@@ -439,6 +439,7 @@ FUNCTION_PASS("guard-widening", GuardWideningPass())
+ FUNCTION_PASS("gvn-hoist", GVNHoistPass())
+ FUNCTION_PASS("gvn-sink", GVNSinkPass())
+ FUNCTION_PASS("helloworld", HelloWorldPass())
++FUNCTION_PASS("hoist-anticipated-expressions", HoistAnticipatedExpressionsPass())
+ FUNCTION_PASS("indirectbr-expand", IndirectBrExpandPass(TM))
+ FUNCTION_PASS("infer-address-spaces", InferAddressSpacesPass())
+ FUNCTION_PASS("infer-alignment", InferAlignmentPass())
+diff --git a/llvm/lib/Transforms/Utils/CMakeLists.txt b/llvm/lib/Transforms/Utils/CMakeLists.txt
+index f7e66eca6aeb..7bf393a01b62 100644
+--- a/llvm/lib/Transforms/Utils/CMakeLists.txt
++++ b/llvm/lib/Transforms/Utils/CMakeLists.txt
+@@ -33,6 +33,7 @@ add_llvm_component_library(LLVMTransformUtils
+   GlobalStatus.cpp
+   GuardUtils.cpp
+   HelloWorld.cpp
++  HoistAnticipatedExpression.cpp
+   InlineFunction.cpp
+   InjectTLIMappings.cpp
+   InstructionNamer.cpp
+diff --git a/llvm/lib/Transforms/Utils/HoistAnticipatedExpression.cpp b/llvm/lib/Transforms/Utils/HoistAnticipatedExpression.cpp
+new file mode 100644
+index 000000000000..38ed8cc1cdda
+--- /dev/null
++++ b/llvm/lib/Transforms/Utils/HoistAnticipatedExpression.cpp
+@@ -0,0 +1,302 @@
++#include "llvm/Transforms/Utils/HoistAnticipatedExpression.h"
++#include "llvm/ADT/BitVector.h"
++#include "llvm/ADT/DenseMap.h"
++#include "llvm/ADT/DenseSet.h"
++#include "llvm/ADT/PostOrderIterator.h"
++#include "llvm/ADT/SmallVector.h"
++#include "llvm/ADT/STLExtras.h"
++#include "llvm/IR/BasicBlock.h"
++#include "llvm/IR/CFG.h"
++#include "llvm/IR/Dominators.h"
++#include "llvm/IR/Function.h"
++#include "llvm/IR/Instruction.h"
++#include "llvm/IR/Instructions.h"
++#include "llvm/IR/PassManager.h"
++#include "llvm/Support/Debug.h"
++#include "llvm/Support/raw_ostream.h"
++
++#define DEBUG_TYPE "hoist-anticipated-expressions"
++
++using namespace llvm;
++
++// Check if an instruction is safe to move around
++static bool isSafeToHoist(const Instruction &inst) {
++  if (isa<BinaryOperator>(&inst)) {
++    return !inst.mayHaveSideEffects();
++  }
++  if (isa<CastInst>(&inst)) {
++    return true;
++  }
++  if (const auto *callInst = dyn_cast<CallInst>(&inst)) {
++    if (callInst->isInlineAsm()) return false;
++
++    // Check if the call itself is marked safe
++    if (!callInst->mayHaveSideEffects()) return true;
++
++    // Fallback Check the function declaration
++    if (const Function *func = callInst->getCalledFunction()) {
++      return func->doesNotAccessMemory() || func->onlyReadsMemory();
++    }
++  }
++  return false;
++}
++
++// Check if a value doesn't depend on local block definitions
++static bool isAvailableEverywhere(const Value *val) {
++  return isa<Constant>(val) || isa<Argument>(val) || isa<GlobalValue>(val);
++}
++
++// Convert an Instruction into our canonical Expression struct
++static Expression getCanonicalExpression(const Instruction &inst) {
++  SmallVector<Value *, 4> ops(inst.op_begin(), inst.op_end());
++  Type *destType = nullptr;
++
++  if (const auto *binOp = dyn_cast<BinaryOperator>(&inst)) {
++    // Sort operands for commutative operations (like a+b == b+a)
++    if (binOp->isCommutative() && ops.size() >= 2 && ops[0] > ops[1]) {
++      std::swap(ops[0], ops[1]);
++    }
++  } else if (const auto *castInst = dyn_cast<CastInst>(&inst)) {
++    destType = castInst->getDestTy();
++  }
++
++  return Expression(inst.getOpcode(), ops, destType);
++}
++
++// Main pass implementation
++PreservedAnalyses HoistAnticipatedExpressionsPass::run(Function &F, FunctionAnalysisManager &AM) {
++  if (F.isDeclaration()) return PreservedAnalyses::all();
++
++  auto &domTree = AM.getResult<DominatorTreeAnalysis>(F);
++
++  // Reverse Post Order for processing blocks top-down
++  std::vector<BasicBlock *> rpoBlocks;
++  for (BasicBlock *bb : ReversePostOrderTraversal<Function *>(&F)) {
++    rpoBlocks.push_back(bb);
++  }
++
++  // Post Order for backward dataflow
++  std::vector<BasicBlock *> poBlocks;
++  for (BasicBlock *bb : post_order(&F)) {
++    poBlocks.push_back(bb);
++  }
++
++  bool functionChange = false;
++  bool changes = true;
++
++  // Loop until the code stops changing
++  while (changes) {
++    changes = false;
++
++    // Find all unique expressions in the function
++    DenseMap<Expression, unsigned> expressionToIndex;
++    std::vector<Expression> indexToExpression;
++
++    for (BasicBlock &bb : F) {
++      for (Instruction &instruction : bb) {
++        if (!isSafeToHoist(instruction)) continue;
++
++        Expression expr = getCanonicalExpression(instruction);
++        if (expressionToIndex.find(expr) == expressionToIndex.end()) {
++          expressionToIndex[expr] = indexToExpression.size();
++          indexToExpression.push_back(expr);
++        }
++      }
++    }
++
++    unsigned numExprs = indexToExpression.size();
++    if (numExprs == 0) break;
++
++    // Computing USE and DEF sets for each block
++    DenseMap<BasicBlock *, BitVector> useSet, defSet;
++    for (BasicBlock &bb : F) {
++      BitVector use(numExprs, false), def(numExprs, false);
++      DenseSet<Value *> definedLocally;
++
++      // Find USE
++      for (Instruction &inst : bb) {
++        if (isSafeToHoist(inst)) {
++          unsigned idx = expressionToIndex[getCanonicalExpression(inst)];
++          bool isExposed = true;
++
++          for (Value *op : inst.operands()) {
++            if (!isAvailableEverywhere(op) && definedLocally.count(op)) {
++              isExposed = false;
++              break;
++            }
++          }
++          if (isExposed) use.set(idx);
++        }
++        definedLocally.insert(&inst);
++      }
++
++      // Find DEF
++      for (Instruction &localDef : bb) {
++        for (auto pair : expressionToIndex) {
++          Expression expr = pair.first;
++          unsigned idx = pair.second;
++
++          for (Value *op : expr.operands) {
++            if (!isAvailableEverywhere(op) && op == &localDef) {
++              def.set(idx);
++              break;
++            }
++          }
++        }
++      }
++      useSet[&bb] = use;
++      defSet[&bb] = def;
++    }
++
++    // Backward Dataflow Analysis (Anticipated Expressions)
++    DenseMap<BasicBlock *, BitVector> antExpIn, antExpOut;
++    for (BasicBlock &bb : F) {
++      antExpIn[&bb] = BitVector(numExprs, true);
++      antExpOut[&bb] = BitVector(numExprs, true);
++    }
++
++    // Exits have no anticipated out
++    for (BasicBlock &bb : F) {
++      if (succ_empty(&bb)) antExpOut[&bb] = BitVector(numExprs, false);
++    }
++
++    bool dataflowChanged = true;
++    while (dataflowChanged) {
++      dataflowChanged = false;
++      for (BasicBlock *bb : poBlocks) {
++        // antExpOut = Intersection of antExpIn of all successors
++        BitVector newOut(numExprs, true);
++        bool hasSuccessor = false;
++
++        for (BasicBlock *succ : successors(bb)) {
++          newOut &= antExpIn[succ];
++          hasSuccessor = true;
++        }
++        if (!hasSuccessor) newOut = BitVector(numExprs, false);
++
++        // antExpIn = use U (antExpOut - def)
++        BitVector newIn = newOut;
++        newIn.reset(defSet[bb]);
++        newIn |= useSet[bb];
++
++        if (newOut != antExpOut[bb] || newIn != antExpIn[bb]) {
++          antExpOut[bb] = newOut;
++          antExpIn[bb] = newIn;
++          dataflowChanged = true;
++        }
++      }
++    }
++
++    // Hoisting the expressions
++    for (BasicBlock *bb : rpoBlocks) {
++      // Find unique successors
++      std::vector<BasicBlock *> uniqueSuccs;
++      for (BasicBlock *succ : successors(bb)) {
++        if (!llvm::is_contained(uniqueSuccs, succ)) {
++          uniqueSuccs.push_back(succ);
++        }
++      }
++
++      if (uniqueSuccs.empty() || antExpOut[bb].none()) continue;
++
++      // Checking which expressions we can hoist
++      std::vector<unsigned> candidates;
++      for (int idx : antExpOut[bb].set_bits()) {
++        candidates.push_back(idx);
++      }
++
++      for (unsigned idx : candidates) {
++        Expression expr = indexToExpression[idx];
++        std::vector<Instruction *> succInsts;
++        bool presentInAll = true;
++
++        for (BasicBlock *succ : uniqueSuccs) {
++          if (!domTree.dominates(bb, succ)) {
++            presentInAll = false;
++            break;
++          }
++
++          Instruction *foundInst = nullptr;
++          for (Instruction &inst : *succ) {
++            if (isSafeToHoist(inst) && getCanonicalExpression(inst) == expr) {
++              foundInst = &inst;
++              break;
++            }
++          }
++
++          if (!foundInst) {
++            presentInAll = false;
++            break;
++          }
++          succInsts.push_back(foundInst);
++        }
++
++        if (!presentInAll) continue;
++
++        // Clone the instruction and put it before the block's terminator
++        Instruction *proto = succInsts[0];
++        Instruction *hoisted = proto->clone();
++        hoisted->setName(proto->getName());
++        hoisted->insertBefore(bb->getTerminator()->getIterator());
++
++        // Replace old instructions with the hoisted one
++        for (Instruction *oldInst : succInsts) {
++          oldInst->replaceAllUsesWith(hoisted);
++          oldInst->eraseFromParent();
++        }
++
++        changes = true;
++        functionChange = true;
++      }
++    }
++
++    // Common Subexpression Elimination
++    DenseMap<Expression, std::vector<Instruction *>> exprMap;
++    for (BasicBlock *bb : rpoBlocks) {
++      for (Instruction &inst : *bb) {
++        if (isSafeToHoist(inst)) {
++          exprMap[getCanonicalExpression(inst)].push_back(&inst);
++        }
++      }
++    }
++
++    std::vector<Instruction *> instructionsToErase;
++    for (auto &pair : exprMap) {
++      auto &instList = pair.second;
++      if (instList.size() < 2) continue;
++
++      for (size_t i = 0; i < instList.size(); i++) {
++        if (!instList[i]) continue;
++
++        for (size_t j = i + 1; j < instList.size(); j++) {
++          if (!instList[j]) continue;
++
++          Instruction *instA = instList[i];
++          Instruction *instB = instList[j];
++
++          if (domTree.dominates(instA, instB)) {
++            instB->replaceAllUsesWith(instA);
++            instructionsToErase.push_back(instB);
++            instList[j] = nullptr;
++          } else if (domTree.dominates(instB, instA)) {
++            instA->replaceAllUsesWith(instB);
++            instructionsToErase.push_back(instA);
++            instList[i] = nullptr;
++            break;
++          }
++        }
++      }
++    }
++
++    for (Instruction *deadInst : instructionsToErase) {
++      deadInst->eraseFromParent();
++    }
++    if (!instructionsToErase.empty()) changes = true;
++  }
++
++  if (!functionChange) return PreservedAnalyses::all();
++
++  PreservedAnalyses PA;
++  PA.preserve<DominatorTreeAnalysis>();
++  return PA;
++}
+\ No newline at end of file
+diff --git a/llvm/test/Transforms/Util/hoist-anticipated-expressions.ll b/llvm/test/Transforms/Util/hoist-anticipated-expressions.ll
+new file mode 100644
+index 000000000000..d8c56d626dd0
+--- /dev/null
++++ b/llvm/test/Transforms/Util/hoist-anticipated-expressions.ll
+@@ -0,0 +1,352 @@
++; RUN: opt < %s -passes=hoist-anticipated-expressions -S | FileCheck %s
++
++attributes #0 = { nounwind uwtable "frame-pointer"="none" "min-legal-vector-width"="0" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" }
++
++attributes #2 = { nounwind "frame-pointer"="none" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" }
++
++attributes #42 = { nounwind readnone "frame-pointer"="none" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" }
++
++; metadata
++!3 = !{!4, !4, i64 0}
++!4 = !{!"int", !5, i64 0}
++!5 = !{!"omnipotent char", !6, i64 0}
++!6 = !{!"Simple C/C++ TBAA"}
++!7 = !{!8, !8, i64 0}
++!8 = !{!"any pointer", !5, i64 0}
++!9 = distinct !{!9, !10}
++!10 = !{!"llvm.loop.mustprogress"}
++
++; Generated from an if/else.
++
++; CHECK-LABEL: @simple_if_else
++define dso_local i32 @simple_if_else(i32 noundef %0, ptr noundef %1) #0 {
++  %3 = icmp ugt i32 %0, 2
++  br i1 %3, label %4, label %8
++
++4:                                                ; preds = %2
++  %5 = mul i32 %0, %0
++  %6 = add i32 %5, %0
++  %7 = add i32 %6, 5
++  br label %12
++  ; Only one instance of mul + add + add should be left.
++  ; CHECK: %[[M:.*]] = mul i32
++  ; CHECK: add {{.*}} %[[M]]
++  ; CHECK: add
++  ; CHECK-NOT: mul
++  ; CHECK-NOT: add
++  ; CHECK: ret
++
++8:                                                ; preds = %2
++  %9 = mul i32 %0, %0
++  %10 = add i32 %9, %0
++  %11 = add i32 %10, 5
++  br label %12
++
++12:                                               ; preds = %8, %4
++  %13 = phi i32 [ %7, %4 ], [ %11, %8 ]
++  ret i32 %13
++}
++
++; A multiple if/else if/else block with anticipated expressions.
++
++; CHECK-LABEL: @simple_if_else_multiple
++define dso_local i32 @simple_if_else_multiple(i32 noundef %0, ptr noundef %1) #0 {
++  %3 = icmp ugt i32 %0, 3
++  br i1 %3, label %4, label %8
++
++4:                                                ; preds = %2
++  %5 = mul i32 %0, %0
++  %6 = add i32 %5, %0
++  %7 = add i32 %6, 5
++  br label %18
++  ; Only one instance of mul + add + add should be left.
++  ; CHECK: mul
++  ; CHECK: add
++  ; CHECK: add
++  ; CHECK-NOT: mul
++  ; CHECK-NOT: add
++  ; CHECK: ret
++
++8:                                                ; preds = %2
++  %9 = icmp ugt i32 %0, 2
++  br i1 %9, label %10, label %14
++
++10:                                               ; preds = %8
++  %11 = mul i32 %0, %0
++  %12 = add i32 %11, %0
++  %13 = add i32 %12, 5
++  br label %18
++
++14:                                               ; preds = %8
++  %15 = mul i32 %0, %0
++  %16 = add i32 %15, %0
++  %17 = add i32 %16, 5
++  br label %18
++
++18:                                               ; preds = %10, %14, %4
++  %19 = phi i32 [ %7, %4 ], [ %13, %10 ], [ %17, %14 ]
++  ret i32 %19
++}
++
++; No optimization needs to be performed on the memory form (it's okay to not
++; optimize and so we don't check anything here except that the pass shouldn't
++; crash on this.
++; CHECK: if_else_memory
++define dso_local i32 @if_else_memory(i32 noundef %0, ptr noundef %1) #0 {
++  %3 = alloca i32, align 4
++  %4 = alloca i32, align 4
++  %5 = alloca ptr, align 8
++  %6 = alloca i32, align 4
++  store i32 0, ptr %3, align 4
++  store i32 %0, ptr %4, align 4
++  store ptr %1, ptr %5, align 8
++  %7 = load i32, ptr %4, align 4
++  store i32 %7, ptr %6, align 4
++  %8 = load i32, ptr %6, align 4
++  %9 = icmp ugt i32 %8, 2
++  br i1 %9, label %10, label %17
++
++10:                                               ; preds = %2
++  %11 = load i32, ptr %6, align 4
++  %12 = load i32, ptr %6, align 4
++  %13 = mul i32 %11, %12
++  %14 = load i32, ptr %6, align 4
++  %15 = add i32 %13, %14
++  %16 = add i32 %15, 5
++  store i32 %16, ptr %6, align 4
++  br label %24
++
++17:                                               ; preds = %2
++  %18 = load i32, ptr %6, align 4
++  %19 = load i32, ptr %6, align 4
++  %20 = mul i32 %18, %19
++  %21 = load i32, ptr %6, align 4
++  %22 = add i32 %20, %21
++  %23 = add i32 %22, 3
++  store i32 %23, ptr %6, align 4
++  br label %24
++
++24:                                               ; preds = %17, %10
++  %25 = load i32, ptr %6, align 4
++  ret i32 %25
++}
++
++; Generated from a simple for loop.
++
++; CHECK-LABEL: @for_loop_invariant_expr
++define dso_local i32 @for_loop_invariant_expr(i32 noundef %0, ptr noundef %1) #0 {
++  br label %3
++
++3:                                                ; preds = %9, %2
++  %4 = phi i32 [ 0, %2 ], [ %12, %9 ]
++  %5 = icmp ult i32 %4, 10
++  br i1 %5, label %9, label %6
++
++6:                                                ; preds = %3
++  %7 = mul nsw i32 %0, %0
++  %8 = srem i32 %7, %0
++  ret i32 %8
++
++9:                                                ; preds = %3
++  %10 = mul nsw i32 %0, %0
++  %11 = srem i32 %10, %0
++  %12 = add i32 %4, 1
++  br label %3
++  ; CHECK: %[[M:.*]] = mul
++  ; CHECK: srem i32 %[[M]], %{{.*}}
++  ; CHECK-NOT: mul
++  ; CHECK-NOT: srem
++  ; CHECK: ret
++}
++
++; Generated from a switch statement.
++
++; CHECK: @switch
++define dso_local i32 @switch(i32 noundef %0, ptr noundef %1) #0 {
++  switch i32 %0, label %11 [
++    i32 0, label %3
++    i32 1, label %3
++    i32 2, label %7
++    i32 3, label %7
++  ]
++
++  ; CHECK: mul
++  ; CHECK: add
++  ; CHECK: add
++  ; CHECK-NOT: mul
++  ; CHECK-NOT: mul
++  ; CHECK: ret
++
++3:                                                ; preds = %2, %2
++  %4 = mul i32 %0, %0
++  %5 = add i32 %4, %0
++  %6 = add i32 %5, 3
++  br label %15
++
++7:                                                ; preds = %2, %2
++  %8 = mul i32 %0, %0
++  %9 = add i32 %8, %0
++  %10 = add i32 %9, 3
++  br label %15
++
++11:                                               ; preds = %2
++  %12 = mul i32 %0, %0
++  %13 = add i32 %12, %0
++  %14 = add i32 %13, 3
++  br label %15
++
++15:                                               ; preds = %11, %7, %3
++  %16 = phi i32 [ %14, %11 ], [ %10, %7 ], [ %6, %3 ]
++  ret i32 %16
++}
++
++; if/else with a math function call.
++
++attributes #3 = { nounwind }
++
++; Function Attrs: nounwind
++declare dso_local double @exp(double noundef) #42
++
++; Function Attrs: nounwind uwtable
++; CHECK: @if_else_math_call
++define dso_local i32 @if_else_math_call(i32 noundef %0, ptr noundef %1) #0 {
++  %3 = icmp ugt i32 %0, 3
++  br i1 %3, label %4, label %12
++
++  ; CHECK: mul
++  ; CHECK: call double @exp
++  ; CHECK-NOT: call
++
++4:                                                ; preds = %2
++  %5 = mul i32 %0, %0
++  %6 = uitofp i32 %5 to double
++  %7 = uitofp i32 %0 to double
++  %8 = call double @exp(double noundef %7) #3
++  %9 = fadd double %6, %8
++  %10 = fadd double %9, 5.000000e+00
++  %11 = fptoui double %10 to i32
++  br label %30
++
++12:                                               ; preds = %2
++  %13 = icmp ugt i32 %0, 2
++  br i1 %13, label %14, label %22
++
++14:                                               ; preds = %12
++  %15 = mul i32 %0, %0
++  %16 = uitofp i32 %15 to double
++  %17 = uitofp i32 %0 to double
++  %18 = call double @exp(double noundef %17) #3
++  %19 = fadd double %16, %18
++  %20 = fadd double %19, 3.000000e+00
++  %21 = fptoui double %20 to i32
++  br label %30
++
++22:                                               ; preds = %12
++  %23 = mul i32 %0, %0
++  %24 = uitofp i32 %23 to double
++  %25 = uitofp i32 %0 to double
++  %26 = call double @exp(double noundef %25) #3
++  %27 = fadd double %24, %26
++  %28 = fadd double %27, 1.000000e+00
++  %29 = fptoui double %28 to i32
++  br label %30
++
++30:                                               ; preds = %14, %22, %4
++  %31 = phi i32 [ %11, %4 ], [ %21, %14 ], [ %29, %22 ]
++  ret i32 %31
++}
++
++; if/else with multiple redundant expressions in the block.
++
++; Function Attrs: nounwind uwtable
++; CHECK-LABEL: @if_else_multiple_redundant_exprs
++define dso_local i32 @if_else_multiple_redundant_exprs(i32 noundef %0, ptr noundef %1) #0 {
++  %3 = icmp ugt i32 %0, 2
++  br i1 %3, label %4, label %9
++
++  ; There should be only one mul left
++  ; CHECK: mul
++  ; CHECK-NOT: mul
++  ; CHECK: ret
++
++4:                                                ; preds = %2
++  %5 = mul i32 %0, %0
++  %6 = add i32 %5, %0
++  %7 = add i32 %6, 5
++  %8 = add i32 %7, 5
++  br label %14
++
++9:                                                ; preds = %2
++  %10 = mul i32 %0, %0
++  %11 = add i32 %10, %0
++  %12 = add i32 %11, 3
++  %13 = mul i32 %0, %0
++  br label %14
++
++14:                                               ; preds = %9, %4
++  %15 = phi i32 [ %8, %4 ], [ %13, %9 ]
++  %16 = phi i32 [ %7, %4 ], [ %12, %9 ]
++  %17 = add i32 %16, %15
++  ret i32 %17
++}
++
++; CHECK: @not_anticipated_for_loop
++define dso_local i32 @not_anticipated_for_loop(i32 noundef %0, ptr noundef %1) {
++  br label %3
++
++3:                                                ; preds = %8, %2
++  %4 = phi i32 [ undef, %2 ], [ %10, %8 ]
++  %5 = phi i32 [ 0, %2 ], [ %11, %8 ]
++  %6 = icmp ult i32 %5, 10
++  br i1 %6, label %8, label %7
++
++7:                                                ; preds = %3
++  ret i32 %4
++
++  ; CHECK: mul
++  ; CHECK-NEXT: srem
++  ; CHECK-NEXT: add
++  ; CHECK-NEXT: br label %{{.*}}, !llvm.loop
++
++8:                                                ; preds = %3
++  %9 = mul nsw i32 %0, %0
++  %10 = srem i32 %9, %0
++  %11 = add i32 %5, 1
++  br label %3, !llvm.loop !3
++}
++
++; Not anticipated expression here.
++; CHECK: @not_anticipated_switch
++define dso_local i32 @not_anticipated_switch(i32 noundef %0, ptr noundef %1) {
++  switch i32 %0, label %8 [
++    i32 0, label %3
++    i32 1, label %3
++    i32 2, label %3
++  ]
++  ; CHECK: urem
++  ; CHECK-NEXT: mul
++  ; CHECK-NEXT: add
++  ; CHECK-NEXT: add
++
++
++  ; CHECK: mul
++  ; CHECK-NEXT: add
++  ; CHECK-NEXT: add
++
++3:                                                ; preds = %2, %2, %2
++  %4 = urem i32 %0, 2
++  %5 = mul i32 %4, %4
++  %6 = add i32 %5, %4
++  %7 = add i32 %6, 3
++  br label %12
++
++8:                                                ; preds = %2
++  %9 = mul i32 %0, %0
++  %10 = add i32 %9, %0
++  %11 = add i32 %10, 2
++  br label %12
++
++12:                                               ; preds = %8, %3
++  %13 = phi i32 [ %11, %8 ], [ %7, %3 ]
++  ret i32 %13
++}
+-- 
+2.43.0
+

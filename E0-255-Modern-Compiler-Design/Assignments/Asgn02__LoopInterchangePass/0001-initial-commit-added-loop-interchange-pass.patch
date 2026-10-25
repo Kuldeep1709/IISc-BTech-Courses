@@ -1,0 +1,390 @@
+From 000355411e14b2330ae52f8d148af811a1442c43 Mon Sep 17 00:00:00 2001
+From: Kuldeep1709 <kuldeepjatav@iisc.ac.in>
+Date: Mon, 13 Apr 2026 05:03:37 +0530
+Subject: [PATCH] initial commit - added loop interchange pass
+
+---
+ mlir/include/mlir/Dialect/Affine/Passes.h     |   3 +
+ mlir/include/mlir/Dialect/Affine/Passes.td    |   6 +
+ .../Affine/Transforms/LoopInterchange.h       |   7 +
+ .../Dialect/Affine/Transforms/CMakeLists.txt  |   1 +
+ .../Affine/Transforms/LoopInterchange.cpp     | 311 ++++++++++++++++++
+ 5 files changed, 328 insertions(+)
+ create mode 100644 mlir/include/mlir/Dialect/Affine/Transforms/LoopInterchange.h
+ create mode 100644 mlir/lib/Dialect/Affine/Transforms/LoopInterchange.cpp
+
+diff --git a/mlir/include/mlir/Dialect/Affine/Passes.h b/mlir/include/mlir/Dialect/Affine/Passes.h
+index 2f70f24dd3ef..c63cdccc6e20 100644
+--- a/mlir/include/mlir/Dialect/Affine/Passes.h
++++ b/mlir/include/mlir/Dialect/Affine/Passes.h
+@@ -127,6 +127,9 @@ std::unique_ptr<Pass> createAffineExpandIndexOpsPass();
+ /// operations.
+ std::unique_ptr<Pass> createAffineExpandIndexOpsAsAffinePass();
+ 
++/// Creates a pass to perform loop interchange for locality/parallelism.
++std::unique_ptr<Pass> createAffineLoopInterchangePass();
++
+ //===----------------------------------------------------------------------===//
+ // Registration
+ //===----------------------------------------------------------------------===//
+diff --git a/mlir/include/mlir/Dialect/Affine/Passes.td b/mlir/include/mlir/Dialect/Affine/Passes.td
+index 6ad45b828f65..18acb97d3a24 100644
+--- a/mlir/include/mlir/Dialect/Affine/Passes.td
++++ b/mlir/include/mlir/Dialect/Affine/Passes.td
+@@ -441,4 +441,10 @@ def AffineExpandIndexOpsAsAffine : Pass<"affine-expand-index-ops-as-affine"> {
+   let constructor = "mlir::affine::createAffineExpandIndexOpsAsAffinePass()";
+ }
+ 
++def AffineLoopInterchange : Pass<"affine-loop-interchange", "func::FuncOp"> {
++  let summary = "Interchange affine loops for locality and parallelism";
++  let constructor = "mlir::affine::createAffineLoopInterchangePass()";
++  let dependentDialects = ["affine::AffineDialect"];
++}
++
+ #endif // MLIR_DIALECT_AFFINE_PASSES
+diff --git a/mlir/include/mlir/Dialect/Affine/Transforms/LoopInterchange.h b/mlir/include/mlir/Dialect/Affine/Transforms/LoopInterchange.h
+new file mode 100644
+index 000000000000..9058fc8d4c8a
+--- /dev/null
++++ b/mlir/include/mlir/Dialect/Affine/Transforms/LoopInterchange.h
+@@ -0,0 +1,7 @@
++#pragma once
++
++#include "mlir/Pass/Pass.h"
++
++namespace mlir {
++std::unique_ptr<Pass> createAffineLoopInterchangePass();
++}
+\ No newline at end of file
+diff --git a/mlir/lib/Dialect/Affine/Transforms/CMakeLists.txt b/mlir/lib/Dialect/Affine/Transforms/CMakeLists.txt
+index c792200f4a49..a272f0f5874b 100644
+--- a/mlir/lib/Dialect/Affine/Transforms/CMakeLists.txt
++++ b/mlir/lib/Dialect/Affine/Transforms/CMakeLists.txt
+@@ -18,6 +18,7 @@ add_mlir_dialect_library(MLIRAffineTransforms
+   SuperVectorize.cpp
+   SimplifyAffineStructures.cpp
+   SimplifyAffineMinMax.cpp
++  LoopInterchange.cpp
+ 
+   ADDITIONAL_HEADER_DIRS
+   ${MLIR_MAIN_INCLUDE_DIR}/mlir/Dialect/Affine
+diff --git a/mlir/lib/Dialect/Affine/Transforms/LoopInterchange.cpp b/mlir/lib/Dialect/Affine/Transforms/LoopInterchange.cpp
+new file mode 100644
+index 000000000000..bed96904a7fa
+--- /dev/null
++++ b/mlir/lib/Dialect/Affine/Transforms/LoopInterchange.cpp
+@@ -0,0 +1,311 @@
++#include "mlir/Dialect/Affine/Passes.h"
++
++#include <numeric>
++#include <algorithm>
++#include <bits/stdc++.h>
++#include "mlir/IR/Builders.h"
++#include "mlir/IR/IRMapping.h"
++#include "mlir/IR/BuiltinOps.h"
++#include "llvm/Support/Debug.h"
++#include "llvm/ADT/SmallVector.h"
++#include "mlir/Dialect/Affine/Utils.h"
++#include "mlir/Dialect/Func/IR/FuncOps.h"
++#include "mlir/Dialect/Affine/LoopUtils.h"
++#include "mlir/Dialect/Affine/IR/AffineOps.h"
++#include "mlir/Dialect/Affine/Analysis/LoopAnalysis.h"
++#include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
++
++namespace mlir {
++  namespace affine {
++    #define GEN_PASS_DEF_AFFINELOOPINTERCHANGE
++    #include "mlir/Dialect/Affine/Passes.h.inc"
++  } // namespace affine
++} // namespace mlir
++
++#define DEBUG_TYPE "affine-loop-interchange"
++
++using namespace mlir;
++using namespace mlir::affine;
++
++namespace {
++
++// Precomputing memory access information to avoid many MLIR API calls while checking all permutaions
++struct MemoryAccessInfo {
++  AffineMap map;
++  ValueRange indices;
++  bool isAccessLoad;
++};
++
++// Collecting perfectly nested loops
++static bool collectPerfectlyNestedLoops(AffineForOp root, SmallVectorImpl<AffineForOp> &band) {  
++  AffineForOp curr = root;
++  while (true) {
++    band.push_back(curr);
++    unsigned int numOps = 0;
++    Operation *innerForLoop = nullptr;
++    auto &body = curr.getBody()->getOperations();
++
++    for (auto &op : body) {
++      if (op.hasTrait<OpTrait::IsTerminator>()) continue;
++
++      numOps++;
++
++      if (isa<AffineIfOp>(&op)) return false; // not perfectly nested
++      if (auto forOp = dyn_cast<AffineForOp>(&op)) innerForLoop = &op;
++    }
++    if (innerForLoop && numOps == 1) curr = cast<AffineForOp>(innerForLoop); 
++    else break;
++  }
++  return true; // perfectly nested
++}
++
++// Checking if loops are rectangular or not
++static bool isRectangular(ArrayRef<AffineForOp> band) {
++  for (unsigned int i = 1; i < band.size(); i++) {
++    AffineForOp loopI = band[i];
++    for (Value operand : loopI.getLowerBoundOperands()) {
++      for (unsigned int j = 0; j < i; j++) {
++        AffineForOp loopJ = band[j];
++        if (operand == loopJ.getInductionVar()) return false;
++      }
++    }
++    for (Value operand : loopI.getUpperBoundOperands()) {
++      for (unsigned int j = 0; j < i; j++) {
++        AffineForOp loopJ = band[j];
++        if (operand == loopJ.getInductionVar()) return false;
++      }
++    }
++  }
++  return true; // rectangular
++}
++
++// Using inbuilt function for checking if permutation is legal or not
++static bool isPermutationLegal(ArrayRef<AffineForOp> band, ArrayRef<unsigned> perm) {
++  return mlir::affine::isValidLoopInterchangePermutation(band, perm);
++}
++
++// Finding the index of loop which is most suitable for spatial locality
++static int getSpatialLocalityLoop(AffineMap map, ValueRange operands, ArrayRef<AffineForOp> band) {
++  if (map.getNumResults() == 0) return -1;
++
++  AffineExpr lastExpr = map.getResult(map.getNumResults() - 1);
++
++  for (unsigned int d = 0; d < operands.size(); d++) {
++    Value operand = operands[d];
++    for (int i = 0; i < (int)band.size(); i++) {
++      AffineForOp loop = band[i];
++      if (operand == loop.getInductionVar()) {
++        bool isDim = (d < map.getNumDims());
++        unsigned pos = (isDim ? d : d - map.getNumDims());
++        if (isDim ? lastExpr.isFunctionOfDim(pos) : lastExpr.isFunctionOfSymbol(pos)){
++          return i;
++        }
++      }
++    }
++  }
++  return -1; // last dimension is not dependent on any loop
++}
++
++// Checking if access involves the loop
++static bool accessInvolvesLoop(AffineMap map, ValueRange operands, AffineForOp loop) {
++  Value iv = loop.getInductionVar();
++  for (unsigned int d = 0; d < operands.size(); d++) {
++    if (operands[d] == iv) {
++      bool isDim = (d < map.getNumDims());
++      unsigned pos = (isDim ? d : d - map.getNumDims());
++      for (unsigned r = 0; r < map.getNumResults(); r++) {
++        if (isDim ? map.getResult(r).isFunctionOfDim(pos) : map.getResult(r).isFunctionOfSymbol(pos)){
++          return true;
++        }
++      }
++    }
++  }
++  return false; // access does not involve the loop
++}
++
++// Scoring the permutation based on spatial locality, temporal reuse and parallelism
++static double scorePermutation(ArrayRef<AffineForOp> band, ArrayRef<unsigned> perm, ArrayRef<MemoryAccessInfo> memInfos) {
++  unsigned int depth = band.size();
++  double score = 0.0;
++
++  SmallVector<unsigned, 6> invPerm(depth);
++  for (unsigned i = 0; i < depth; i++) invPerm[perm[i]] = i;
++
++  AffineForOp innermostLoop = band[invPerm[depth - 1]];
++
++  for (const MemoryAccessInfo &info : memInfos) {
++    // Spatial locality
++    int spatialLoop = getSpatialLocalityLoop(info.map, info.indices, band);
++    if (spatialLoop >= 0) {
++      unsigned newPos = perm[spatialLoop];
++      double spatialScore = 3.0 * (double)newPos / (double)(depth - 1 > 0 ? depth - 1 : 1);
++      score += spatialScore;
++    }
++
++    // Temporal reuse
++    if (info.isAccessLoad && !accessInvolvesLoop(info.map, info.indices, innermostLoop)) score += 4.0;
++  }
++
++  // Outer parallelism
++  if (mlir::affine::isLoopParallel(band[invPerm[0]])) score += 3.0;
++  if (depth > 1 && mlir::affine::isLoopParallel(band[invPerm[1]])) score += 1.0;
++
++  return score;
++}
++
++// Optimizing a perfectly nested band
++static void optimizeBand(SmallVectorImpl<AffineForOp> &band) {
++  unsigned int depth = band.size();
++
++  // handling edge cases
++  if (depth < 2) return;
++  if (depth > 6) return;
++  if (!isRectangular(band)) return;
++
++  // Precomputing memory access info to avoid MLIR API overhead during permutation
++  SmallVector<MemoryAccessInfo, 8> memInfos;
++  band[0].walk([&](Operation *op) {
++    if (auto load = dyn_cast<AffineLoadOp>(op)) {
++      memInfos.push_back({load.getAffineMap(), load.getMapOperands(), true});
++    } 
++    else if (auto store = dyn_cast<AffineStoreOp>(op)) {
++      memInfos.push_back({store.getAffineMap(), store.getMapOperands(), false});
++    }
++  });
++
++  SmallVector<unsigned, 6> perm(depth);
++  std::iota(perm.begin(), perm.end(), 0);
++
++  bool foundLegal = false;
++  double bestScore = -1e18;
++  SmallVector<unsigned, 6> bestPerm = perm;
++
++  do {
++    if (!isPermutationLegal(band, perm)) continue;
++    
++    double s = scorePermutation(band, perm, memInfos);
++    
++    LLVM_DEBUG(llvm::dbgs() << "  perm=[";
++               for (unsigned p : perm) llvm::dbgs() << p << " ";
++               llvm::dbgs() << "] score=" << s << "\n");
++    
++    if (!foundLegal || s > bestScore) {
++      bestScore = s;
++      bestPerm = perm;
++      foundLegal = true;
++    }
++  } while (std::next_permutation(perm.begin(), perm.end()));
++
++  if (!foundLegal) return;
++
++  bool isIdentity = true;
++  for (unsigned i = 0; i < depth; ++i)
++    if (bestPerm[i] != i) {
++      isIdentity = false;
++      break;
++    }
++  if (isIdentity) return;
++
++  LLVM_DEBUG(llvm::dbgs() << "Applying permutation: [";
++             for (unsigned p : bestPerm) llvm::dbgs() << p << " ";
++             llvm::dbgs() << "] score=" << bestScore << "\n");
++
++  mlir::affine::permuteLoops(band, bestPerm);
++}
++
++// Handling imperfectly nested loops
++static void handleImperfectNestWithDistribution(AffineForOp outer) {
++  Block *body = outer.getBody();
++  SmallVector<AffineForOp> innerLoops;
++  for (auto &op : *body) {
++    if (auto forOp = dyn_cast<AffineForOp>(&op)) innerLoops.push_back(forOp);
++    else if (!op.hasTrait<OpTrait::IsTerminator>()) return; 
++  }
++  if (innerLoops.empty()) return;
++
++  OpBuilder builder(outer);
++  builder.setInsertionPointAfter(outer);
++
++  for (AffineForOp inner : innerLoops) {
++    IRMapping mapper;
++    auto *newOuterOp = outer->clone(mapper);
++    auto newOuter = cast<AffineForOp>(newOuterOp);
++    builder.insert(newOuter);
++
++    Block *newBody = newOuter.getBody();
++    auto &ops = newBody->getOperations();
++    while (ops.begin() != std::prev(ops.end())) ops.erase(ops.begin());
++
++    inner->moveBefore(newBody->getTerminator());
++
++    Value oldIV = outer.getInductionVar();
++    Value newIV = newOuter.getInductionVar();
++    inner.walk([&](Operation *op) {
++      for (OpOperand &operand : op->getOpOperands()) {
++        if (operand.get() == oldIV) {
++          operand.set(newIV);
++        }
++      }
++    });
++
++    SmallVector<AffineForOp> band = {newOuter, inner};
++    optimizeBand(band);
++  }
++
++  outer.erase();
++}
++
++// Processing imperfectly nested loops
++static void processImperfectNest(AffineForOp root) {
++  SmallVector<AffineForOp> band;
++  if (collectPerfectlyNestedLoops(root, band) && band.size() >= 2) {
++    optimizeBand(band);
++    return;
++  }
++
++  Block *body = root.getBody();
++  bool onlyLoops = true;
++  SmallVector<AffineForOp> innerLoops;
++  for (auto &op : *body) {
++    if (auto forOp = dyn_cast<AffineForOp>(&op)) innerLoops.push_back(forOp);
++    else if (!op.hasTrait<OpTrait::IsTerminator>()) onlyLoops = false;
++  }
++  if (onlyLoops && innerLoops.size() >= 2) {
++    handleImperfectNestWithDistribution(root);
++    return;
++  }
++
++  for (AffineForOp child : innerLoops) processImperfectNest(child);
++}
++
++} // namespace
++
++// Pass
++struct AffineLoopInterchangePass
++    : public mlir::affine::impl::AffineLoopInterchangeBase<
++          AffineLoopInterchangePass> {
++  void runOnOperation() override {
++    func::FuncOp func = getOperation();
++
++    SmallVector<affine::AffineForOp> outerLoops;
++    func.walk<WalkOrder::PreOrder>([&](affine::AffineForOp forOp) {
++      if (!forOp->getParentOfType<affine::AffineForOp>()) {
++        outerLoops.push_back(forOp);
++      }
++    });
++
++    for (affine::AffineForOp outerLoop : outerLoops) {
++      SmallVector<affine::AffineForOp> band;
++      if (collectPerfectlyNestedLoops(outerLoop, band) && band.size() >= 2) optimizeBand(band);
++      else processImperfectNest(outerLoop);
++    }
++  }
++};
++
++namespace mlir {
++  namespace affine {
++    std::unique_ptr<Pass> createAffineLoopInterchangePass() {
++      return std::make_unique<AffineLoopInterchangePass>();
++    }
++  } // namespace affine
++} // namespace mlir
+-- 
+2.34.1
+
